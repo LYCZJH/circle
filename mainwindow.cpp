@@ -5,7 +5,10 @@
 
 static std::vector<TangentCircle> solve_one(const Circle& c1, const Circle& c2, const Circle& c3,int s1, int s2, int s3)
 {
-    auto K = [](const Circle& c) { return c.x*c.x + c.y*c.y - c.r*c.r; };
+    auto K = [](const Circle& c)
+    {
+        return c.x*c.x + c.y*c.y - c.r*c.r;
+    };
     double K1 = K(c1), K2 = K(c2), K3 = K(c3);
 
     double A2 = 2*(c2.x-c1.x), B2 = 2*(c2.y-c1.y), C2 = 2.0*(s2*c2.r - s1*c1.r), D2 = K2-K1;
@@ -53,19 +56,21 @@ static std::vector<TangentCircle> solve_all(const Circle& c1, const Circle& c2, 
     std::vector<TangentCircle> all;
     for (int s1 : {1, -1})
         for (int s2 : {1, -1})
-            for (int s3 : {1, -1}) {
+            for (int s3 : {1, -1})
+            {
                 auto part = solve_one(c1, c2, c3, s1, s2, s3);
                 all.insert(all.end(), part.begin(), part.end());
             }
     return all;
 }
 
+
 CanvasWidget::CanvasWidget(QWidget* parent) : QWidget(parent)
 {
     setMinimumSize(420, 420);
 }
 
-void CanvasWidget::setScene(const Circle& c1, const Circle& c2, const Circle& c3,const std::vector<TangentCircle>& solutions)
+void CanvasWidget::setScene(const Circle& c1, const Circle& c2, const Circle& c3, const std::vector<TangentCircle>& solutions)
 {
     m_c1 = c1; m_c2 = c2; m_c3 = c3; m_sols = solutions;
     update();
@@ -93,7 +98,10 @@ void CanvasWidget::renderScene(QPainter* p) const
     double ox = view.center().x() - world.center().x() * scale;
     double oy = view.center().y() - world.center().y() * scale;
 
-    auto toScreen = [&](double x, double y) { return QPointF(ox + x * scale, oy + y * scale); };
+    auto toScreen = [&](double x, double y)
+    {
+        return QPointF(ox + x * scale, oy + y * scale);
+    };
     auto drawCircle = [&](const Circle& c, QColor color, double width, bool dashed)
     {
         QPen pen(color, width);
@@ -121,11 +129,12 @@ void CanvasWidget::paintEvent(QPaintEvent*)
     renderScene(&p);
 }
 
+
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent)
 {
     buildUi();
     setWindowTitle("三切圆算法测试器");
-    resize(960, 640);
+    resize(1100, 750); //窗口
 }
 
 void MainWindow::buildUi()
@@ -144,13 +153,27 @@ void MainWindow::buildUi()
         {
             m_inputs[i][j] = new QDoubleSpinBox();
             m_inputs[i][j]->setRange(-1000, 1000);
-            m_inputs[i][j]->setDecimals(3);
+            m_inputs[i][j]->setDecimals(4);
             m_inputs[i][j]->setValue(j == 2 ? 1.0 : (i == 1 && j == 0 ? 4.0 : (i == 2 && j == 1 ? 3.0 : 0.0)));
             form->addWidget(new QLabel(labels[j]));
             form->addWidget(m_inputs[i][j]);
         }
         left->addWidget(box);
     }
+
+
+    auto* extBox = new QGroupBox("验证外部解");
+    auto* extLayout = new QHBoxLayout(extBox);
+    extX = new QDoubleSpinBox(); extX->setRange(-1000, 1000); extX->setDecimals(4);
+    extY = new QDoubleSpinBox(); extY->setRange(-1000, 1000); extY->setDecimals(4);
+    extR = new QDoubleSpinBox(); extR->setRange(0, 1000); extR->setDecimals(4); extR->setValue(1.0);
+
+    extLayout->addWidget(new QLabel("X:")); extLayout->addWidget(extX);
+    extLayout->addWidget(new QLabel("Y:")); extLayout->addWidget(extY);
+    extLayout->addWidget(new QLabel("R:")); extLayout->addWidget(extR);
+    auto* verifyBtn = new QPushButton("验证");
+    extLayout->addWidget(verifyBtn);
+    left->addWidget(extBox);
 
     auto* btnRow = new QHBoxLayout();
     auto* solveBtn = new QPushButton("求解全部 8 种组合");
@@ -159,22 +182,23 @@ void MainWindow::buildUi()
     btnRow->addWidget(svgBtn);
     left->addLayout(btnRow);
 
-    m_table = new QTableWidget(0, 6);
-    m_table->setHorizontalHeaderLabels({"符号 (s1,s2,s3)", "x", "y", "R", "验证", "说明"});
-    m_table->horizontalHeader()->setStretchLastSection(true);
-    left->addWidget(m_table, 1);
+    table = new QTableWidget(0, 6);
+    table->setHorizontalHeaderLabels({"符号 (s1,s2,s3)", "x", "y", "R", "验证", "说明"});
+    table->horizontalHeader()->setStretchLastSection(true);
+    left->addWidget(table, 1);
 
     auto* leftWidget = new QWidget();
     leftWidget->setLayout(left);
-    leftWidget->setMaximumWidth(460);
+    leftWidget->setMaximumWidth(500); //加宽
 
-    m_canvas = new CanvasWidget();
+    canvas = new CanvasWidget();
     rootLayout->addWidget(leftWidget);
-    rootLayout->addWidget(m_canvas, 1);
+    rootLayout->addWidget(canvas, 1);
     setCentralWidget(central);
 
     connect(solveBtn, &QPushButton::clicked, this, &MainWindow::onSolve);
     connect(svgBtn, &QPushButton::clicked, this, &MainWindow::onExportSvg);
+    connect(verifyBtn, &QPushButton::clicked, this, &MainWindow::onVerifyExternal);
 }
 
 Circle MainWindow::readCircle(int i) const
@@ -185,22 +209,39 @@ Circle MainWindow::readCircle(int i) const
 void MainWindow::onSolve()
 {
     Circle c1 = readCircle(0), c2 = readCircle(1), c3 = readCircle(2);
-    m_lastSolutions = solve_all(c1, c2, c3);
-    fillTable(m_lastSolutions);
-    m_canvas->setScene(c1, c2, c3, m_lastSolutions);
+    lastSolutions = solve_all(c1, c2, c3);
+
+
+    if (lastSolutions.empty())
+    {
+        table->setRowCount(1);
+        table->setItem(0, 0, new QTableWidgetItem("无解"));
+        table->setItem(0, 1, new QTableWidgetItem("-"));
+        table->setItem(0, 2, new QTableWidgetItem("-"));
+        table->setItem(0, 3, new QTableWidgetItem("-"));
+        table->setItem(0, 4, new QTableWidgetItem("失败"));
+        table->setItem(0, 5, new QTableWidgetItem("几何冲突，找不到合法的相切圆"));
+        table->item(0, 4)->setForeground(QColor(200,0,0));
+    }
+    else
+    {
+        fillTable(lastSolutions);
+    }
+
+    canvas->setScene(c1, c2, c3, lastSolutions);
 }
 
 void MainWindow::fillTable(const std::vector<TangentCircle>& sols)
 {
-    m_table->setRowCount(0);
+    table->setRowCount(0);
     for (const auto& sol : sols)
     {
         bool ok = verify_solution(readCircle(0), readCircle(1), readCircle(2), sol);
-        int row = m_table->rowCount();
-        m_table->insertRow(row);
+        int row = table->rowCount();
+        table->insertRow(row);
         auto set = [&](int col, const QString& text)
         {
-            m_table->setItem(row, col, new QTableWidgetItem(text));
+            table->setItem(row, col, new QTableWidgetItem(text));
         };
         set(0, QString("(%1,%2,%3)").arg(sol.s1).arg(sol.s2).arg(sol.s3));
         set(1, QString::number(sol.c.x, 'f', 4));
@@ -208,14 +249,59 @@ void MainWindow::fillTable(const std::vector<TangentCircle>& sols)
         set(3, QString::number(sol.c.r, 'f', 4));
         set(4, ok ? "通过" : "失败");
         set(5, ok ? "" : "相切关系不成立");
-        m_table->item(row, 4)->setForeground(ok ? QColor(0,140,0) : QColor(200,0,0));
+        table->item(row, 4)->setForeground(ok ? QColor(0,140,0) : QColor(200,0,0));
     }
+}
+
+void MainWindow::onVerifyExternal()
+{
+    Circle c1 = readCircle(0), c2 = readCircle(1), c3 = readCircle(2);
+
+    Circle extSol;
+    extSol.x = extX->value();
+    extSol.y = extY->value();
+    extSol.r = extR->value();
+
+
+    auto guessSign = [](const Circle& sol, const Circle& known)
+    {
+        double d = std::hypot(sol.x - known.x, sol.y - known.y);
+        double d_out = std::abs(d - (sol.r + known.r));   // 外切误差
+        double d_in  = std::abs(d - std::abs(sol.r - known.r)); // 内切误差
+        return (d_out < d_in) ? 1 : -1;
+    };
+
+    int s1 = guessSign(extSol, c1);
+    int s2 = guessSign(extSol, c2);
+    int s3 = guessSign(extSol, c3);
+
+    TangentCircle sol = {extSol, s1, s2, s3};
+
+
+    bool ok = verify_solution(c1, c2, c3, sol, 1e-3);
+
+
+    table->setRowCount(1);
+    auto set = [&](int col, const QString& text)
+    {
+        table->setItem(0, col, new QTableWidgetItem(text));
+    };
+    set(0, QString("(%1,%2,%3)").arg(s1).arg(s2).arg(s3));
+    set(1, QString::number(extSol.x, 'f', 4));
+    set(2, QString::number(extSol.y, 'f', 4));
+    set(3, QString::number(extSol.r, 'f', 4));
+    set(4, ok ? "通过" : "失败");
+    set(5, ok ? "外部解正确" : "外部解存在误差或完全不相切");
+    table->item(0, 4)->setForeground(ok ? QColor(0,140,0) : QColor(200,0,0));
+
+    canvas->setScene(c1, c2, c3, {sol});
 }
 
 void MainWindow::onExportSvg()
 {
     QString path = QFileDialog::getSaveFileName(this, "导出 SVG", "tri_tangent.svg", "SVG 文件 (*.svg)");
-    if (path.isEmpty()) return;
+    if (path.isEmpty())
+        return;
 
     QSvgGenerator gen;
     gen.setFileName(path);
@@ -224,8 +310,19 @@ void MainWindow::onExportSvg()
 
     QPainter p(&gen);
     p.fillRect(QRect(0, 0, 800, 800), Qt::white);
-    m_canvas->resize(800, 800);
-    m_canvas->renderScene(&p);
+
+
+    p.setPen(QPen(QColor(230, 230, 230), 1));
+    for (int i = 0; i < 800; i += 50)
+    {
+        p.drawLine(i, 0, i, 800);
+        p.drawLine(0, i, 800, i);
+    }
+
+    QSize oldSize = canvas->size();
+    canvas->resize(800, 800);
+    canvas->renderScene(&p);
+    canvas->resize(oldSize);
     p.end();
 
     statusBar()->showMessage("已导出: " + path, 3000);

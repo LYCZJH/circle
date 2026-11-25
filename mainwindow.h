@@ -11,6 +11,7 @@
 class QWheelEvent;
 class QMouseEvent;
 class QPaintEvent;
+class QEvent;
 class QDoubleSpinBox;
 class QTableWidget;
 class QPushButton;
@@ -59,6 +60,11 @@ public:
     double zoom() const { return m_zoom; }
     QPointF pan() const { return m_pan; }
     void setView(double zoom, const QPointF& pan);
+    void setSelectedSolution(int index);
+    bool removeSolutionAt(int index);
+
+signals:
+    void hoverInfoChanged(const QString& text);
 
 protected:
     void paintEvent(QPaintEvent*) override;
@@ -67,15 +73,22 @@ protected:
     void mouseMoveEvent(QMouseEvent*) override;
     void mouseReleaseEvent(QMouseEvent*) override;
     void mouseDoubleClickEvent(QMouseEvent*) override;
+    void leaveEvent(QEvent*) override;
 
 private:
     Circle m_c1{0,0,1}, m_c2{4,0,1}, m_c3{2,3,1};
     std::vector<TangentCircle> m_sols;
     QRectF worldBounds() const;
+    QRectF viewRect() const;
+    double viewScale() const;
+    QPointF worldToScreen(const QPointF& point) const;
+    QPointF screenToWorld(const QPointF& point) const;
+    QString hoverInfo(const QPointF& screenPoint) const;
     DrawMode m_mode = DrawMode::TTT;
     double  m_zoom = 1.0;
     QPointF m_pan{0, 0};
     bool    m_dragging = false;
+    int     m_selectedSolution = -1;
     QPoint  m_lastMousePos;
 };
 
@@ -91,6 +104,7 @@ private slots:
     void onExportCsv();
     void onVerifyExternal();
     void onModeChanged(int index);
+    void onDeleteSelectedSolution();
 
 private:
     void buildUi();

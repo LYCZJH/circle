@@ -3,8 +3,10 @@
 #include <QtSvg/QSvgGenerator>
 #include <QFile>
 #include <QTextStream>
+#include <QShortcut>
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 
 static std::vector<TangentCircle> solve_one(const Circle& c1, const Circle& c2, const Circle& c3,int s1, int s2, int s3)
@@ -110,6 +112,7 @@ CanvasWidget::CanvasWidget(QWidget* parent) : QWidget(parent)
 {
     setMinimumSize(420, 420);
     setFocusPolicy(Qt::StrongFocus);   //允许获得焦点方便后续键盘操作
+    setMouseTracking(true);
 }
 
 void CanvasWidget::setScene(const Circle& c1, const Circle& c2, const Circle& c3,const std::vector<TangentCircle>& sols, DrawMode mode)
@@ -117,8 +120,29 @@ void CanvasWidget::setScene(const Circle& c1, const Circle& c2, const Circle& c3
     m_c1 = c1; m_c2 = c2; m_c3 = c3;
     m_sols = sols;
     m_mode = mode;
+    m_selectedSolution = -1;
     resetView();
     update();
+}
+
+void CanvasWidget::setSelectedSolution(int index)
+{
+    m_selectedSolution = (index >= 0 && index < static_cast<int>(m_sols.size())) ? index : -1;
+    update();
+}
+
+bool CanvasWidget::removeSolutionAt(int index)
+{
+    if (index < 0 || index >= static_cast<int>(m_sols.size()))
+        return false;
+
+    m_sols.erase(m_sols.begin() + index);
+    if (m_selectedSolution == index)
+        m_selectedSolution = -1;
+    else if (m_selectedSolution > index)
+        --m_selectedSolution;
+    update();
+    return true;
 }
 
 void CanvasWidget::resetView()
@@ -155,21 +179,44 @@ QRectF CanvasWidget::worldBounds() const
     return rc.adjusted(-pad, -pad, pad, pad);
 }
 
+QRectF CanvasWidget::viewRect() const
+{
+    return QRectF(rect()).adjusted(10, 10, -10, -10);
+}
+
+double CanvasWidget::viewScale() const
+{
+    QRectF world = worldBounds();
+    QRectF view = viewRect();
+    return std::min(view.width() / world.width(), view.height() / world.height()) * m_zoom;
+}
+
+QPointF CanvasWidget::worldToScreen(const QPointF& point) const
+{
+    QRectF world = worldBounds();
+    QRectF view = viewRect();
+    double scale = viewScale();
+    return QPointF(view.center().x() + (point.x() - world.center().x()) * scale + m_pan.x(),
+                   view.center().y() - (point.y() - world.center().y()) * scale + m_pan.y());
+}
+
+QPointF CanvasWidget::screenToWorld(const QPointF& point) const
+{
+    QRectF world = worldBounds();
+    QRectF view = viewRect();
+    double scale = viewScale();
+    if (scale <= 0.0)
+        return world.center();
+    return QPointF(world.center().x() + (point.x() - view.center().x() - m_pan.x()) / scale,
+                   world.center().y() - (point.y() - view.center().y() - m_pan.y()) / scale);
+}
+
 void CanvasWidget::renderScene(QPainter* p) const
 {
     p->setRenderHint(QPainter::Antialiasing);
-    QRectF world = worldBounds();
-    QRectF view = QRectF(rect()).adjusted(10, 10, -10, -10);
-
-    double baseScale = std::min(view.width() / world.width(),view.height() / world.height());
-    double scale = baseScale * m_zoom;
-    double ox = view.center().x() - world.center().x() * scale + m_pan.x();
-    double oy = view.center().y() - world.center().y() * scale + m_pan.y();
-
-    auto toScreen = [&](double x, double y)
-    {
-        return QPointF(ox + x * scale, oy + y * scale);
-    };
+    QRectF view = viewRect();
+    double scale = viewScale();
+    auto toScreen = [&](double x, double y) { return worldToScreen(QPointF(x, y)); };
     auto drawCircle = [&](const Circle& c, QColor color, double width, bool dashed)
     {
         QPen pen(color, width);
@@ -178,28 +225,104 @@ void CanvasWidget::renderScene(QPainter* p) const
         p->setBrush(Qt::NoBrush);
         p->drawEllipse(toScreen(c.x, c.y), c.r * scale, c.r * scale);
     };
+    auto drawCenter = [&](const Circle& c, QColor color)
+    {
+        QPointF center = toScreen(c.x, c.y);
+        p->setPen(QPen(color, 1));
+        p->drawLine(center + QPointF(-4, 0), center + QPointF(4, 0));
+        p->drawLine(center + QPointF(0, -4), center + QPointF(0, 4));
+    };
+
+    p->save();
+    p->setClipRect(view);
+    p->fillRect(view, Qt::white);
+
+    const QPointF topLeft = screenToWorld(view.topLeft());
+    const QPointF bottomRight = screenToWorld(view.bottomRight());
+    const double minX = std::min(topLeft.x(), bottomRight.x());
+    const double maxX = std::max(topLeft.x(), bottomRight.x());
+    const double minY = std::min(topLeft.y(), bottomRight.y());
+    const double maxY = std::max(topLeft.y(), bottomRight.y());
+    const double rawStep = 60.0 / scale;
+    const double magnitude = std::pow(10.0, std::floor(std::log10(rawStep)));
+    const double fraction = rawStep / magnitude;
+    const double step = (fraction <= 1.0 ? 1.0 : fraction <= 2.0 ? 2.0 : fraction <= 5.0 ? 5.0 : 10.0) * magnitude;
+    const int decimals = std::clamp(static_cast<int>(std::ceil(-std::log10(step))), 0, 6);
+
+    QFont tickFont = p->font();
+    tickFont.setPointSize(8);
+    p->setFont(tickFont);
+    p->setPen(QPen(QColor(232, 236, 240), 1));
+    for (double x = std::ceil(minX / step) * step; x <= maxX; x += step)
+    {
+        const double sx = toScreen(x, 0).x();
+        p->drawLine(QPointF(sx, view.top()), QPointF(sx, view.bottom()));
+    }
+    for (double y = std::ceil(minY / step) * step; y <= maxY; y += step)
+    {
+        const double sy = toScreen(0, y).y();
+        p->drawLine(QPointF(view.left(), sy), QPointF(view.right(), sy));
+    }
+
+    p->setPen(QPen(QColor(90, 100, 110), 1.5));
+    if (minX <= 0 && maxX >= 0)
+    {
+        const double x0 = toScreen(0, 0).x();
+        p->drawLine(QPointF(x0, view.top()), QPointF(x0, view.bottom()));
+    }
+    if (minY <= 0 && maxY >= 0)
+    {
+        const double y0 = toScreen(0, 0).y();
+        p->drawLine(QPointF(view.left(), y0), QPointF(view.right(), y0));
+    }
+
+    p->setPen(QColor(80, 90, 100));
+    for (double x = std::ceil(minX / step) * step; x <= maxX; x += step)
+    {
+        const double sx = toScreen(x, 0).x();
+        p->drawText(QPointF(sx + 2, view.bottom() - 3), QString::number(x, 'f', decimals));
+    }
+    for (double y = std::ceil(minY / step) * step; y <= maxY; y += step)
+    {
+        const double sy = toScreen(0, y).y();
+        p->drawText(QPointF(view.left() + 3, sy - 2), QString::number(y, 'f', decimals));
+    }
+    p->restore();
 
     if (m_mode == DrawMode::TTT)
     {
         drawCircle(m_c1, Qt::black, 2, false);
         drawCircle(m_c2, Qt::black, 2, false);
         drawCircle(m_c3, Qt::black, 2, false);
-        for (const auto& sol : m_sols)
+        for (size_t i = 0; i < m_sols.size(); ++i)
         {
+            const auto& sol = m_sols[i];
             bool ok = solution(m_c1, m_c2, m_c3, sol);
-            drawCircle(sol.c, ok ? QColor(0,160,0) : QColor(220,0,0), ok ? 1.5 : 2, !ok);
+            bool selected = static_cast<int>(i) == m_selectedSolution;
+            QColor color = selected ? QColor(45, 115, 230) : (ok ? QColor(0,160,0) : QColor(220,0,0));
+            drawCircle(sol.c, color, selected ? 3 : (ok ? 1.5 : 2), !selected && !ok);
         }
     }
     else
     {
         drawCircle(m_c1, Qt::black, 2, false);
         drawCircle(m_c2, Qt::black, 2, false);
-        for (const auto& sol : m_sols)
+        for (size_t i = 0; i < m_sols.size(); ++i)
         {
+            const auto& sol = m_sols[i];
             bool ok = tangent(sol.c, m_c1, sol.s1) && tangent(sol.c, m_c2, sol.s2);
-            drawCircle(sol.c, ok ? QColor(0,160,0) : QColor(220,0,0), ok ? 2 : 2, !ok);
+            bool selected = static_cast<int>(i) == m_selectedSolution;
+            QColor color = selected ? QColor(45, 115, 230) : (ok ? QColor(0,160,0) : QColor(220,0,0));
+            drawCircle(sol.c, color, selected ? 3 : 2, !selected && !ok);
         }
     }
+
+    drawCenter(m_c1, QColor(40, 40, 40));
+    drawCenter(m_c2, QColor(40, 40, 40));
+    if (m_mode == DrawMode::TTT)
+        drawCenter(m_c3, QColor(40, 40, 40));
+    for (size_t i = 0; i < m_sols.size(); ++i)
+        drawCenter(m_sols[i].c, static_cast<int>(i) == m_selectedSolution ? QColor(45, 115, 230) : QColor(0, 130, 0));
 }
 
 void CanvasWidget::paintEvent(QPaintEvent*)
@@ -250,6 +373,7 @@ void CanvasWidget::mousePressEvent(QMouseEvent* e)
     {
         m_dragging = true;//按下左键或中键拖拽
         m_lastMousePos = e->pos();
+        setFocus();
         setCursor(Qt::ClosedHandCursor);
         e->accept();
         return;
@@ -265,9 +389,11 @@ void CanvasWidget::mouseMoveEvent(QMouseEvent* e)
         m_pan += QPointF(delta);
         m_lastMousePos = e->pos();
         update();
+        emit hoverInfoChanged(hoverInfo(e->pos()));
         e->accept();
         return;
     }
+    emit hoverInfoChanged(hoverInfo(e->pos()));
     QWidget::mouseMoveEvent(e);
 }
 
@@ -292,6 +418,43 @@ void CanvasWidget::mouseDoubleClickEvent(QMouseEvent* e)
         return;
     }
     QWidget::mouseDoubleClickEvent(e);
+}
+
+void CanvasWidget::leaveEvent(QEvent* e)
+{
+    emit hoverInfoChanged(QString());
+    QWidget::leaveEvent(e);
+}
+
+QString CanvasWidget::hoverInfo(const QPointF& screenPoint) const
+{
+    const QPointF point = screenToWorld(screenPoint);
+    double nearestDistance = std::numeric_limits<double>::infinity();
+    QString nearestName;
+
+    auto consider = [&](const Circle& circle, const QString& name)
+    {
+        const double centerDistance = std::hypot(point.x() - circle.x, point.y() - circle.y);
+        const double circumferenceDistance = std::abs(centerDistance - circle.r);
+        if (circumferenceDistance < nearestDistance)
+        {
+            nearestDistance = circumferenceDistance;
+            nearestName = name;
+        }
+    };
+
+    consider(m_c1, "已知圆 1");
+    consider(m_c2, "已知圆 2");
+    if (m_mode == DrawMode::TTT)
+        consider(m_c3, "已知圆 3");
+    for (size_t i = 0; i < m_sols.size(); ++i)
+        consider(m_sols[i].c, QString("候选解 %1").arg(i + 1));
+
+    return QString("世界坐标: (%1, %2) | 最近圆: %3 | 到圆周距离: %4")
+        .arg(point.x(), 0, 'f', 4)
+        .arg(point.y(), 0, 'f', 4)
+        .arg(nearestName)
+        .arg(nearestDistance, 0, 'f', 4);
 }
 
 
@@ -358,7 +521,7 @@ void MainWindow::buildUi()
     left->addLayout(btnRow);
 
     table = new QTableWidget(0, 6);
-    table->setHorizontalHeaderLabels({"符号 (s1,s2,s3)", "x", "y", "R", "验证", "说明"});
+    table->setHorizontalHeaderLabels({"s1,s2,s3", "x", "y", "R", "验证", "说明"});
     table->horizontalHeader()->setStretchLastSection(true);
     left->addWidget(table, 1);
 
@@ -377,6 +540,26 @@ void MainWindow::buildUi()
     connect(verifyBtn, &QPushButton::clicked, this, &MainWindow::onVerifyExternal);
     connect(resetBtn, &QPushButton::clicked, canvas, &CanvasWidget::resetView);
     connect(modeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &MainWindow::onModeChanged);
+    connect(table, &QTableWidget::currentCellChanged, this, [this](int currentRow, int, int, int)
+    {
+        canvas->setSelectedSolution(currentRow);
+    });
+    connect(canvas, &CanvasWidget::hoverInfoChanged, this, [this](const QString& text)
+    {
+        if (text.isEmpty())
+            statusBar()->clearMessage();
+        else
+            statusBar()->showMessage(text);
+    });
+
+    auto addDeleteSolutionShortcut = [this](QWidget* owner)
+    {
+        auto* shortcut = new QShortcut(QKeySequence(Qt::Key_Delete), owner);
+        shortcut->setContext(Qt::WidgetShortcut);
+        connect(shortcut, &QShortcut::activated, this, &MainWindow::onDeleteSelectedSolution);
+    };
+    addDeleteSolutionShortcut(canvas);
+    addDeleteSolutionShortcut(table);
 }
 
 void MainWindow::onModeChanged(int index)
@@ -385,6 +568,29 @@ void MainWindow::onModeChanged(int index)
     table->setRowCount(0);
     lastSolutions.clear();
     canvas->setScene(readCircle(0), readCircle(1), readCircle(2), {},index == 0 ? DrawMode::TTT : DrawMode::TTR);
+    canvas->setSelectedSolution(-1);
+}
+
+void MainWindow::onDeleteSelectedSolution()
+{
+    const int row = table->currentRow();
+    if (row < 0 || row >= static_cast<int>(lastSolutions.size()))
+        return;
+    if (!canvas->removeSolutionAt(row))
+        return;
+
+    lastSolutions.erase(lastSolutions.begin() + row);
+    table->removeRow(row);
+
+    if (lastSolutions.empty())
+    {
+        canvas->setSelectedSolution(-1);
+        return;
+    }
+
+    const int nextRow = std::min(row, static_cast<int>(lastSolutions.size()) - 1);
+    table->setCurrentCell(nextRow, 0);
+    canvas->setSelectedSolution(nextRow);
 }
 
 void MainWindow::updateInputsUi()
@@ -446,6 +652,9 @@ void MainWindow::onSolve()
     }
 
     canvas->setScene(c1, c2, c3, lastSolutions, mode);
+    canvas->setSelectedSolution(lastSolutions.empty() ? -1 : 0);
+    if (!lastSolutions.empty())
+        table->setCurrentCell(0, 0);
 }
 
 void MainWindow::fillTable(const std::vector<TangentCircle>& sols,bool isTTR)
@@ -534,7 +743,9 @@ void MainWindow::onVerifyExternal()
 
     table->item(0, 4)->setForeground(ok ? QColor(0,140,0) : QColor(200,0,0));
 
+    lastSolutions = {sol};
     canvas->setScene(c1, c2, c3, {sol}, mode);
+    canvas->setSelectedSolution(0);
 }
 
 static QString csvEscape(const QString& s)

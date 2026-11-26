@@ -4,6 +4,7 @@
 #include <QPointF>
 #include <QString>
 #include <QPainter>
+#include <array>
 #include <cmath>
 #include <vector>
 #include <algorithm>
@@ -17,10 +18,16 @@ class QTableWidget;
 class QPushButton;
 class QGroupBox;
 class QComboBox;
+class QStackedWidget;
 
 struct Circle
 {
     double x = 0, y = 0, r = 1;
+};
+
+struct Line
+{
+    double a = 0, b = 0, c = 0;
 };
 
 struct TangentCircle
@@ -31,7 +38,7 @@ struct TangentCircle
 
 enum class DrawMode
 {
-    TTT, TTR
+    TTT, TTR, LLL, TLL, TTL
 };
 
 inline bool tangent(const Circle& sol, const Circle& known, int s, double eps = 1e-6)
@@ -47,13 +54,20 @@ inline bool solution(const Circle& c1, const Circle& c2, const Circle& c3, const
     return tangent(sol.c, c1, sol.s1, eps)&& tangent(sol.c, c2, sol.s2, eps)&& tangent(sol.c, c3, sol.s3, eps);
 }
 
+inline bool tangent(const Circle& sol, const Line& line, double eps = 1e-6)
+{
+    const double distance = std::abs(line.a * sol.x + line.b * sol.y + line.c);
+    const double scale = std::max(1.0, std::max(sol.r, distance));
+    return std::abs(distance - sol.r) < eps * scale;
+}
+
 class CanvasWidget : public QWidget
 {
     Q_OBJECT
 
 public:
     explicit CanvasWidget(QWidget* parent = nullptr);
-    void setScene(const Circle& c1, const Circle& c2, const Circle& c3, const std::vector<TangentCircle>& sols, DrawMode mode);
+    void setScene(const Circle& c1, const Circle& c2, const Circle& c3, const std::vector<TangentCircle>& sols, DrawMode mode, const std::array<Line, 3>& lines = {});
     void renderScene(QPainter* p) const;
 
     void resetView();
@@ -77,6 +91,7 @@ protected:
 
 private:
     Circle m_c1{0,0,1}, m_c2{4,0,1}, m_c3{2,3,1};
+    std::array<Line, 3> m_lines{};
     std::vector<TangentCircle> m_sols;
     QRectF worldBounds() const;
     QRectF viewRect() const;
@@ -109,9 +124,12 @@ private slots:
 private:
     void buildUi();
     Circle readCircle(int index) const;
-    void fillTable(const std::vector<TangentCircle>& sols, bool isTTR);
+    Line readLine(int index) const;
+    void fillTable(const std::vector<TangentCircle>& sols, DrawMode mode);
 
     QDoubleSpinBox* inputs[3][3];
+    QDoubleSpinBox* lineInputs[3][4];
+    QStackedWidget* entityEditors[3];
     QDoubleSpinBox* extX;
     QDoubleSpinBox* extY;
     QDoubleSpinBox* extR;

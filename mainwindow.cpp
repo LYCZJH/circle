@@ -816,7 +816,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent)
 {
     buildUi();
     setWindowTitle("相切圆算法测试器");
-    resize(1100, 750); //窗口
+    resize(1300, 850); //窗口
     onModeChanged(0); // 初始化模式界面
 }
 
@@ -906,7 +906,13 @@ void MainWindow::buildUi()
 
     auto* leftWidget = new QWidget();
     leftWidget->setLayout(left);
-    leftWidget->setMaximumWidth(500); //加宽
+    leftWidget->setMaximumWidth(1000); //加宽
+    table->setColumnWidth(0, 160);
+    table->setColumnWidth(1, 60);    //x
+    table->setColumnWidth(2, 60);    //y
+    table->setColumnWidth(3, 60);    //r
+    table->setColumnWidth(4, 40);
+    table->setColumnWidth(5, 170);
 
     canvas = new CanvasWidget();
     rootLayout->addWidget(leftWidget);
@@ -1271,7 +1277,7 @@ static QString csvEscape(const QString& s)
 void MainWindow::onExportCsv()
 {
     QString path = QFileDialog::getSaveFileName
-        (this, "导出 CSV", "tri_tangent_results.csv", "CSV 文件 (*.csv)");//导出表格内容为 CSV
+        (this, "导出 CSV", "results.csv", "CSV 文件 (*.csv)");//导出表格内容为 CSV
     if (path.isEmpty())
         return;
 
@@ -1340,7 +1346,7 @@ void MainWindow::onExportCsv()
 
 void MainWindow::onExportSvg()
 {
-    QString path = QFileDialog::getSaveFileName(this, "导出 SVG", "tri_tangent.svg", "SVG 文件 (*.svg)");
+    QString path = QFileDialog::getSaveFileName(this, "导出 SVG", "tangent.svg", "SVG 文件 (*.svg)");
     if (path.isEmpty())
         return;
 

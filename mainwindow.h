@@ -19,6 +19,8 @@ class QPushButton;
 class QGroupBox;
 class QComboBox;
 class QStackedWidget;
+class QSpinBox;
+class VertexEditor;
 
 struct Circle
 {
@@ -30,15 +32,21 @@ struct Line
     double a = 0, b = 0, c = 0;
 };
 
+struct Polygon
+{
+    std::vector<QPointF> vertices;
+};
+
 struct TangentCircle
 {
     Circle c;
     int s1 = 1, s2 = 1, s3 = 1;
+    int e1 = -1, e2 = -1, e3 = -1;
 };
 
 enum class DrawMode
 {
-    TTT, TTR, LLL, TLL, TTL
+    TTT, TTR, LLL, TLL, TTL,TTP, LLP, TLP, CPP, LPP, PPP
 };
 
 inline bool tangent(const Circle& sol, const Circle& known, int s, double eps = 1e-6)
@@ -67,7 +75,8 @@ class CanvasWidget : public QWidget
 
 public:
     explicit CanvasWidget(QWidget* parent = nullptr);
-    void setScene(const Circle& c1, const Circle& c2, const Circle& c3, const std::vector<TangentCircle>& sols, DrawMode mode, const std::array<Line, 3>& lines = {});
+    void setScene(const Circle& c1, const Circle& c2, const Circle& c3, const std::vector<TangentCircle>& sols,
+                  DrawMode mode, const std::array<Line, 3>& lines = {}, const std::array<Polygon, 3>& polygons = {});
     void renderScene(QPainter* p) const;
 
     void resetView();
@@ -92,6 +101,7 @@ protected:
 private:
     Circle m_c1{0,0,1}, m_c2{4,0,1}, m_c3{2,3,1};
     std::array<Line, 3> m_lines{};
+    std::array<Polygon, 3> m_polygons;
     std::vector<TangentCircle> m_sols;
     QRectF worldBounds() const;
     QRectF viewRect() const;
@@ -125,11 +135,15 @@ private:
     void buildUi();
     Circle readCircle(int index) const;
     Line readLine(int index) const;
-    void fillTable(const std::vector<TangentCircle>& sols, DrawMode mode);
+    bool readPolygon(int slot, Polygon& polygon, QString& error) const;
+    bool readPolygons(std::array<Polygon, 3>& polygons, DrawMode mode, QString& error) const;
+    void fillTable(const std::vector<TangentCircle>& sols, DrawMode mode, const std::array<Polygon, 3>& polygons);
 
     QDoubleSpinBox* inputs[3][3];
     QDoubleSpinBox* lineInputs[3][4];
     QStackedWidget* entityEditors[3];
+    QSpinBox* polygonSideCounts[3];
+    VertexEditor* polygonEditors[3] = {};
     QDoubleSpinBox* extX;
     QDoubleSpinBox* extY;
     QDoubleSpinBox* extR;

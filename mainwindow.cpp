@@ -72,9 +72,9 @@ static std::vector<TangentCircle> solve_ttr(const Circle& c1, const Circle& c2, 
             double d  = std::hypot(dx, dy);
 
             const double eps = 1e-9;
-            if (d > r1 + r2 + eps) continue;             // 两轨迹圆外离
-            if (d < std::abs(r1 - r2) - eps) continue;   // 一圆包含另一圆
-            if (d < eps) continue;                       // 同心无解或无穷多解跳过
+            if (d > r1 + r2 + eps) continue;// 两轨迹圆外离
+            if (d < std::abs(r1 - r2) - eps) continue;// 一圆包含另一圆
+            if (d < eps) continue;// 同心无解或无穷多解跳过
 
             double a  = (r1*r1 - r2*r2 + d*d) / (2.0*d);
             double h2 = r1*r1 - a*a;
@@ -128,11 +128,38 @@ static std::vector<TangentCircle> dedupSolutions(std::vector<TangentCircle> sols
 
 static bool modeUsesLine(DrawMode mode, int slot)
 {
-    if (mode == DrawMode::LLL)
-        return true;
-    if (mode == DrawMode::TLL)
-        return slot > 0;
-    return mode == DrawMode::TTL && slot == 2;
+    switch (mode)
+    {
+    case DrawMode::LLL: return true;
+    case DrawMode::TLL: return slot > 0;
+    case DrawMode::TTL: return slot == 2;
+    case DrawMode::LLP: return slot < 2;
+    case DrawMode::TLP: return slot == 1;
+    case DrawMode::LPP: return slot == 0;
+    default: return false;
+    }
+}
+
+static bool modeUsesPolygon(DrawMode mode, int slot)
+{
+    switch (mode)
+    {
+    case DrawMode::TTP: return slot == 2;
+    case DrawMode::LLP: return slot == 2;
+    case DrawMode::TLP: return slot == 2;
+    case DrawMode::CPP: return slot > 0;
+    case DrawMode::LPP: return slot > 0;
+    case DrawMode::PPP: return true;
+    default: return false;
+    }
+}
+
+static bool modeHasPolygon(DrawMode mode)
+{
+    for (int i = 0; i < 3; ++i)
+        if (modeUsesPolygon(mode, i))
+            return true;
+    return false;
 }
 
 static bool modeUsesCircle(DrawMode mode, int slot)
@@ -141,7 +168,13 @@ static bool modeUsesCircle(DrawMode mode, int slot)
         return true;
     if (mode == DrawMode::TTR)
         return slot < 2;
-    return !modeUsesLine(mode, slot);
+    if (mode == DrawMode::TTP)
+        return slot < 2;
+    if (mode == DrawMode::TLL || mode == DrawMode::TLP || mode == DrawMode::CPP)
+        return slot == 0;
+    if (mode == DrawMode::TTL)
+        return slot < 2;
+    return false;
 }
 
 static DrawMode modeFromIndex(int index)
@@ -152,10 +185,143 @@ static DrawMode modeFromIndex(int index)
     case 2: return DrawMode::LLL;
     case 3: return DrawMode::TLL;
     case 4: return DrawMode::TTL;
+    case 5: return DrawMode::TTP;
+    case 6: return DrawMode::LLP;
+    case 7: return DrawMode::TLP;
+    case 8: return DrawMode::CPP;
+    case 9: return DrawMode::LPP;
+    case 10: return DrawMode::PPP;
     default: return DrawMode::TTT;
     }
 }
 
+static int polygonCountForSlot(DrawMode mode, int slot)
+{
+    int number = 0;
+    for (int i = 0; i <= slot; ++i)
+        if (modeUsesPolygon(mode, i))
+            ++number;
+    return number;
+}
+
+static Line polygonEdgeLine(const Polygon& polygon, int edgeIndex)
+{
+    const QPointF& start = polygon.vertices[static_cast<size_t>(edgeIndex)];
+    const QPointF& end = polygon.vertices[static_cast<size_t>((edgeIndex + 1) % polygon.vertices.size())];
+    const double dx = end.x() - start.x();
+    const double dy = end.y() - start.y();
+    const double length = std::hypot(dx, dy);
+    const double a = -dy / length;
+    const double b = dx / length;
+    return {a, b, -(a * start.x() + b * start.y())};
+}
+
+static bool polygonTangent(const Circle& circle, const Polygon& polygon, int edgeIndex, int side, double eps = 1e-6)
+{
+    if (edgeIndex < 0 || edgeIndex >= static_cast<int>(polygon.vertices.size()))
+        return false;
+    const Line contactLine = polygonEdgeLine(polygon, edgeIndex);
+    const double signedDistance = contactLine.a * circle.x + contactLine.b * circle.y + contactLine.c;
+    const double scale = std::max(1.0, std::max(circle.r, std::abs(signedDistance)));
+    const double tolerance = eps * scale;
+    if (std::abs(signedDistance - side * circle.r) > tolerance)
+        return false;
+
+    const QPointF& start = polygon.vertices[static_cast<size_t>(edgeIndex)];
+    const QPointF& end = polygon.vertices[static_cast<size_t>((edgeIndex + 1) % polygon.vertices.size())];
+    const double dx = end.x() - start.x();
+    const double dy = end.y() - start.y();
+    const double lengthSquared = dx * dx + dy * dy;
+    const double contactX = circle.x - side * circle.r * contactLine.a;
+    const double contactY = circle.y - side * circle.r * contactLine.b;
+    const double projection = ((contactX - start.x()) * dx + (contactY - start.y()) * dy) / lengthSquared;
+    if (projection < -tolerance || projection > 1.0 + tolerance)
+        return false;
+
+    if (side > 0)
+    {
+        for (size_t i = 0; i < polygon.vertices.size(); ++i)
+        {
+            const Line edge = polygonEdgeLine(polygon, static_cast<int>(i));
+            const double distance = edge.a * circle.x + edge.b * circle.y + edge.c;
+            if (distance < circle.r - tolerance)
+                return false;
+        }
+    }
+    return true;
+}
+
+class VertexEditor : public QScrollArea
+{
+public:
+    explicit VertexEditor(QWidget* parent = nullptr) : QScrollArea(parent)
+    {
+        setWidgetResizable(true);
+        setFrameShape(QFrame::StyledPanel);
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+        setMinimumHeight(120);
+        setMaximumHeight(240);
+
+        QWidget* container = new QWidget(this);
+        m_layout = new QGridLayout(container);
+        m_layout->setContentsMargins(8, 8, 8, 8);
+        m_layout->setHorizontalSpacing(10);
+        m_layout->setVerticalSpacing(6);
+        m_layout->setColumnStretch(1, 1);
+        m_layout->setColumnStretch(2, 1);
+        setWidget(container);
+    }
+
+    void setVertexCount(int count)
+    {
+        while (m_x.count() > count)
+        {
+            const int row = m_x.count() - 1;
+            QWidget* widgets[] = {m_labels[row], m_x[row], m_y[row]};
+            for (QWidget* w : widgets)
+            {
+                m_layout->removeWidget(w);
+                delete w;
+            }
+            m_labels.removeLast();
+            m_x.removeLast();
+            m_y.removeLast();
+        }
+        while (m_x.count() < count)
+        {
+            const int row = m_x.count();
+            auto* label = new QLabel(QString("顶点 %1").arg(row + 1));
+            auto* x = new QDoubleSpinBox;
+            x->setRange(-1000.0, 1000.0);
+            x->setDecimals(4);
+            auto* y = new QDoubleSpinBox;
+            y->setRange(-1000.0, 1000.0);
+            y->setDecimals(4);
+            m_layout->addWidget(label, row, 0);
+            m_layout->addWidget(x, row, 1);
+            m_layout->addWidget(y, row, 2);
+            m_labels.append(label);
+            m_x.append(x);
+            m_y.append(y);
+        }
+    }
+
+    int vertexCount() const { return m_x.count(); }
+
+    QPointF vertex(int row) const { return {m_x[row]->value(), m_y[row]->value()}; }
+
+    void setVertex(int row, const QPointF& value)
+    {
+        m_x[row]->setValue(value.x());
+        m_y[row]->setValue(value.y());
+    }
+
+private:
+    QGridLayout* m_layout = nullptr;
+    QList<QLabel*> m_labels;
+    QList<QDoubleSpinBox*> m_x;
+    QList<QDoubleSpinBox*> m_y;
+};
 
 static QString sideName(double a, double b)
 {
@@ -207,11 +373,43 @@ static bool solutionMatches(const std::array<Circle, 3>& circles, const std::arr
     return true;
 }
 
-static std::vector<TangentCircle> solve_line_circle(const std::array<Circle, 3>& circles,const std::array<Line, 3>& lines, DrawMode mode)
+static int polygonEdgeForSlot(const TangentCircle& sol, int slot)
+{
+    return slot == 0 ? sol.e1 : slot == 1 ? sol.e2 : sol.e3;
+}
+
+static bool solutionMatches(const std::array<Circle, 3>& circles, const std::array<Line, 3>& lines,const std::array<Polygon, 3>& polygons, const TangentCircle& sol, DrawMode mode)
+{
+    if (mode == DrawMode::TTR || mode == DrawMode::TTT)
+        return solutionMatches(circles, lines, sol, mode);
+
+    const int signs[] = {sol.s1, sol.s2, sol.s3};
+    for (int i = 0; i < 3; ++i)
+    {
+        if (modeUsesLine(mode, i))
+        {
+            if (!tangent(sol.c, lines[static_cast<size_t>(i)]))
+                return false;
+        }
+        else if (modeUsesPolygon(mode, i))
+        {
+            if (!polygonTangent(sol.c, polygons[static_cast<size_t>(i)], polygonEdgeForSlot(sol, i), signs[i]))
+                return false;
+        }
+        else if (!tangent(sol.c, circles[static_cast<size_t>(i)], signs[i]))
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+static std::vector<TangentCircle> solve_linear_circle_combo(const std::array<Circle, 3>& circles,const std::array<Line, 3>& lines,DrawMode mode, const std::array<Polygon, 3>& polygons,const std::array<int, 3>& polygonEdges)
 {
     struct Constraint
     {
         bool isLine;
+        bool isPolygon;
         Circle circle;
         Line line;
         int sign;
@@ -226,8 +424,10 @@ static std::vector<TangentCircle> solve_line_circle(const std::array<Circle, 3>&
         for (int i = 0; i < 3; ++i)
         {
             const int sign = (mask & (1 << i)) ? 1 : -1;
-            constraints[i] = {modeUsesLine(mode, i), circles[i], lines[i], sign};
-            if (!constraints[i].isLine)
+            const bool polygonConstraint = modeUsesPolygon(mode, i);
+            const bool linearConstraint = modeUsesLine(mode, i) || polygonConstraint;
+            constraints[i] = {linearConstraint, polygonConstraint, circles[i], lines[i], sign};
+            if (!linearConstraint)
             {
                 if (anchor < 0)
                     anchor = i;
@@ -265,7 +465,13 @@ static std::vector<TangentCircle> solve_line_circle(const std::array<Circle, 3>&
             TangentCircle candidate{{x, y, radius}, constraints[0].sign, constraints[1].sign, constraints[2].sign};
             for (int i = 0; i < 3; ++i)
             {
-                const bool valid = constraints[i].isLine?tangent(candidate.c, constraints[i].line):tangent(candidate.c, constraints[i].circle, constraints[i].sign);
+                bool valid;
+                if (constraints[i].isPolygon)
+                    valid = polygonTangent(candidate.c, polygons[static_cast<size_t>(i)], polygonEdges[static_cast<size_t>(i)], constraints[i].sign);
+                else if (constraints[i].isLine)
+                    valid = tangent(candidate.c, constraints[i].line);
+                else
+                    valid = tangent(candidate.c, constraints[i].circle, constraints[i].sign);
                 if (!valid)
                     return;
             }
@@ -274,6 +480,9 @@ static std::vector<TangentCircle> solve_line_circle(const std::array<Circle, 3>&
                 if (std::hypot(existing.c.x - x, existing.c.y - y) < 1e-6 && std::abs(existing.c.r - radius) < 1e-6)
                     return;
             }
+            candidate.e1 = polygonEdges[0];
+            candidate.e2 = polygonEdges[1];
+            candidate.e3 = polygonEdges[2];
             results.push_back(candidate);
         };
 
@@ -383,18 +592,50 @@ static std::vector<TangentCircle> solve_line_circle(const std::array<Circle, 3>&
     return results;
 }
 
+static std::vector<TangentCircle> solve_line_circle(const std::array<Circle, 3>& circles,const std::array<Line, 3>& lines,const std::array<Polygon, 3>& polygons, DrawMode mode)
+{
+    std::vector<TangentCircle> results;
+    std::array<Line, 3> effectiveLines = lines;
+    std::array<int, 3> polygonEdges{-1, -1, -1};
+    auto visit = [&](auto&& self, int slot) -> void
+    {
+        if (slot == 3)
+        {
+            auto solutions = solve_linear_circle_combo(circles, effectiveLines, mode, polygons, polygonEdges);
+            results.insert(results.end(), solutions.begin(), solutions.end());
+            return;
+        }
+        if (!modeUsesPolygon(mode, slot))
+        {
+            self(self, slot + 1);
+            return;
+        }
+        const Polygon& polygon = polygons[static_cast<size_t>(slot)];
+        for (size_t edge = 0; edge < polygon.vertices.size(); ++edge)
+        {
+            polygonEdges[static_cast<size_t>(slot)] = static_cast<int>(edge);
+            effectiveLines[static_cast<size_t>(slot)] = polygonEdgeLine(polygon, static_cast<int>(edge));
+            self(self, slot + 1);
+        }
+        polygonEdges[static_cast<size_t>(slot)] = -1;
+    };
+    visit(visit, 0);
+    return results;
+}
+
 
 CanvasWidget::CanvasWidget(QWidget* parent) : QWidget(parent)
 {
     setMinimumSize(420, 420);
-    setFocusPolicy(Qt::StrongFocus);   //允许获得焦点方便后续键盘操作
+    setFocusPolicy(Qt::StrongFocus);
     setMouseTracking(true);
 }
 
-void CanvasWidget::setScene(const Circle& c1, const Circle& c2, const Circle& c3,const std::vector<TangentCircle>& sols, DrawMode mode,const std::array<Line, 3>& lines)
+void CanvasWidget::setScene(const Circle& c1, const Circle& c2, const Circle& c3,const std::vector<TangentCircle>& sols, DrawMode mode, const std::array<Line, 3>& lines, const std::array<Polygon, 3>& polygons)
 {
     m_c1 = c1; m_c2 = c2; m_c3 = c3;
     m_lines = lines;
+    m_polygons = polygons;
     m_sols = sols;
     m_mode = mode;
     m_selectedSolution = -1;
@@ -470,6 +711,27 @@ QRectF CanvasWidget::worldBounds() const
 
     for (const auto& s : m_sols)
         expand(rc, s.c);
+    if (modeHasPolygon(m_mode))
+    {
+        for (int i = 0; i < 3; ++i)
+        {
+            if (!modeUsesPolygon(m_mode, i))
+                continue;
+            for (const QPointF& vertex : m_polygons[static_cast<size_t>(i)].vertices)
+            {
+                const QRectF pointBounds(vertex.x(), vertex.y(), 0, 0);
+                if (!hasBounds)
+                {
+                    rc = pointBounds;
+                    hasBounds = true;
+                }
+                else
+                {
+                    rc |= pointBounds;
+                }
+            }
+        }
+    }
 
     double pad = std::max(rc.width(), rc.height()) * 0.15 + 1.0;
     return rc.adjusted(-pad, -pad, pad, pad);
@@ -586,6 +848,26 @@ void CanvasWidget::renderScene(QPainter* p) const
     }
     p->restore();
 
+    if (modeHasPolygon(m_mode))
+    {
+        const QColor colors[] = {QColor(90, 120, 165), QColor(160, 105, 75), QColor(90, 155, 115)};
+        p->save();
+        p->setClipRect(view);
+        for (int i = 0; i < 3; ++i)
+        {
+            const Polygon& polygon = m_polygons[static_cast<size_t>(i)];
+            if (!modeUsesPolygon(m_mode, i) || polygon.vertices.size() < 3)
+                continue;
+            QPolygonF polygonPath;
+            for (const QPointF& vertex : polygon.vertices)
+                polygonPath << worldToScreen(vertex);
+            p->setPen(QPen(colors[i], 2));
+            p->setBrush(QColor(colors[i].red(), colors[i].green(), colors[i].blue(), 28));
+            p->drawPolygon(polygonPath);
+        }
+        p->restore();
+    }
+
     const QPointF bottomLeft = screenToWorld(QPointF(view.left(), view.bottom()));
     const QPointF topRight = screenToWorld(QPointF(view.right(), view.top()));
     const double worldMinX = std::min(bottomLeft.x(), topRight.x());
@@ -635,21 +917,7 @@ void CanvasWidget::renderScene(QPainter* p) const
     for (size_t i = 0; i < m_sols.size(); ++i)
     {
         const auto& sol = m_sols[i];
-        bool ok = true;
-        if (m_mode == DrawMode::TTR)
-        {
-            ok = tangent(sol.c, m_c1, sol.s1) && tangent(sol.c, m_c2, sol.s2);
-        }
-        else
-        {
-            for (int constraint = 0; constraint < 3; ++constraint)
-            {
-                if (modeUsesLine(m_mode, constraint))
-                    ok = ok && tangent(sol.c, m_lines[static_cast<size_t>(constraint)]);
-                else if (modeUsesCircle(m_mode, constraint))
-                    ok = ok && tangent(sol.c, circles[constraint], constraint == 0 ? sol.s1 : constraint == 1 ? sol.s2 : sol.s3);
-            }
-        }
+        const bool ok = solutionMatches({m_c1, m_c2, m_c3}, m_lines, m_polygons, sol, m_mode);
         const bool selected = static_cast<int>(i) == m_selectedSolution;
         const QColor color = selected ? QColor(45, 115, 230) : (ok ? QColor(0,160,0) : QColor(220,0,0));
         const double width = selected ? 3.0 : (ok ? 1.5 : 2.0);
@@ -801,7 +1069,34 @@ QString CanvasWidget::hoverInfo(const QPointF& screenPoint) const
         }
     }
     for (size_t i = 0; i < m_sols.size(); ++i)
-        consider(m_sols[i].c, QString("候选解 %1").arg(i + 1));
+        consider(m_sols[i].c, QString("相切圆 %1").arg(i + 1));
+
+    if (modeHasPolygon(m_mode))
+    {
+        for (int polygonIndex = 0; polygonIndex < 3; ++polygonIndex)
+        {
+            if (!modeUsesPolygon(m_mode, polygonIndex))
+                continue;
+            const Polygon& polygon = m_polygons[static_cast<size_t>(polygonIndex)];
+            for (size_t i = 0; i < polygon.vertices.size(); ++i)
+            {
+                const QPointF& start = polygon.vertices[i];
+                const QPointF& end = polygon.vertices[(i + 1) % polygon.vertices.size()];
+                const double dx = end.x() - start.x();
+                const double dy = end.y() - start.y();
+                const double lengthSquared = dx * dx + dy * dy;
+                const double projection = std::clamp(((point.x() - start.x()) * dx + (point.y() - start.y()) * dy) / lengthSquared, 0.0, 1.0);
+                const double distance = std::hypot(point.x() - (start.x() + projection * dx),
+                                                   point.y() - (start.y() + projection * dy));
+                if (distance < nearestDistance)
+                {
+                    nearestDistance = distance;
+                    nearestName = QString("多边形%1边%2").arg(polygonCountForSlot(m_mode, polygonIndex)).arg(i + 1);
+                    distanceDescription = "到边界距离";
+                }
+            }
+        }
+    }
 
     return QString("世界坐标: (%1, %2) | 最近对象: %3 | %4: %5")
         .arg(point.x(), 0, 'f', 4)
@@ -829,7 +1124,7 @@ void MainWindow::buildUi()
     auto* modeBox = new QGroupBox("相切测试模式");
     auto* modeLayout = new QHBoxLayout(modeBox);
     modeCombo = new QComboBox();
-    modeCombo->addItems({"三圆相切", "两圆定半径", "三线相切","两线一圆相切", "两圆一线相切"});
+    modeCombo->addItems({"三圆相切", "两圆定半径", "三线相切", "两线一圆相切", "两圆一线相切","两圆一多边形", "两线一多边形", "一圆一线一多边形","一圆两多边形", "一线两多边形", "三多边形"});
     modeLayout->addWidget(modeCombo);
     left->addWidget(modeBox);
     const char* names[3] = {"已知圆 1", "已知圆 2", "已知圆 3"};
@@ -853,7 +1148,7 @@ void MainWindow::buildUi()
         entityEditors[i]->addWidget(circlePage);
 
         auto* linePage = new QWidget();
-        linePage->setToolTip("输入直线上两个不同点；正侧由第一个点到第二个点的方向确定");
+        linePage->setToolTip("输入直线上两个不同点；正侧为从第一个点看向第二个点的左侧");
         auto* lineForm = new QGridLayout(linePage);
         const char* lineLabels[4] = {"x1", "y1", "x2", "y2"};
         const double defaults[3][4] = {
@@ -871,6 +1166,40 @@ void MainWindow::buildUi()
             lineForm->addWidget(lineInputs[i][j], j / 2, (j % 2) * 2 + 1);
         }
         entityEditors[i]->addWidget(linePage);
+        auto* polygonPage = new QWidget();
+        auto* polygonPageLayout = new QVBoxLayout(polygonPage);
+        auto* polygonCountLayout = new QHBoxLayout();
+        polygonCountLayout->addWidget(new QLabel("边数："));
+        polygonSideCounts[i] = new QSpinBox();
+        polygonSideCounts[i]->setRange(3, 20);
+        polygonSideCounts[i]->setValue(4);
+        polygonCountLayout->addWidget(polygonSideCounts[i]);
+        polygonCountLayout->addStretch();
+        polygonPageLayout->addLayout(polygonCountLayout);
+
+        polygonEditors[i] = new VertexEditor(polygonPage);
+        polygonPageLayout->addWidget(polygonEditors[i]);
+
+        const double centerX = i == 1 ? 5.0 : 0.0;
+        const double centerY = i == 2 ? 5.0 : 0.0;
+        const double xValues[] = {centerX - 2, centerX + 2, centerX + 2, centerX - 2};
+        const double yValues[] = {centerY - 2, centerY - 2, centerY + 2, centerY + 2};
+        polygonEditors[i]->setVertexCount(4);
+        for (int v = 0; v < 4; ++v)
+            polygonEditors[i]->setVertex(v, {xValues[v], yValues[v]});
+
+        connect(polygonSideCounts[i], QOverload<int>::of(&QSpinBox::valueChanged), this,
+                [this, i](int count)
+                {
+                    // 减少边数后再增加时保留已有顶点值
+                    QList<QPointF> saved;
+                    for (int row = 0; row < polygonEditors[i]->vertexCount(); ++row)
+                        saved.append(polygonEditors[i]->vertex(row));
+                    polygonEditors[i]->setVertexCount(count);
+                    for (int row = 0; row < saved.count() && row < count; ++row)
+                        polygonEditors[i]->setVertex(row, saved[row]);
+                });
+        entityEditors[i]->addWidget(polygonPage);
         groupLayout->addWidget(entityEditors[i]);
         left->addWidget(groupBoxes[i]);
     }
@@ -954,7 +1283,11 @@ void MainWindow::onModeChanged(int index)
     lastSolutions.clear();
     const DrawMode mode = modeFromIndex(index);
     const std::array<Line, 3> lines{readLine(0), readLine(1), readLine(2)};
-    canvas->setScene(readCircle(0), readCircle(1), readCircle(2), {}, mode, lines);
+    std::array<Polygon, 3> polygons;
+    QString error;
+    if (!readPolygons(polygons, mode, error))
+        statusBar()->showMessage(error, 5000);
+    canvas->setScene(readCircle(0), readCircle(1), readCircle(2), {}, mode, lines, polygons);
     canvas->setSelectedSolution(-1);
 }
 
@@ -1005,6 +1338,11 @@ void MainWindow::updateInputsUi()
             groupBoxes[i]->setTitle(QString("直线 %1").arg(++lineNumber));
             entityEditors[i]->setCurrentIndex(1);
         }
+        else if (modeUsesPolygon(mode, i))
+        {
+            groupBoxes[i]->setTitle(QString("多边形 %1").arg(polygonCountForSlot(mode, i)));
+            entityEditors[i]->setCurrentIndex(2);
+        }
         else
         {
             groupBoxes[i]->setTitle(QString("圆 %1").arg(++circleNumber));
@@ -1031,10 +1369,106 @@ Line MainWindow::readLine(int i) const
     const double length = std::hypot(dx, dy);
     if (length < 1e-9)
         return {};
-
-    const double a = dy / length;
-    const double b = -dx / length;
+    const double a = -dy / length;
+    const double b =  dx / length;
     return {a, b, -(a * x1 + b * y1)};
+}
+
+bool MainWindow::readPolygon(int slot, Polygon& polygon, QString& error) const
+{
+    polygon.vertices.clear();
+    if (slot < 0 || slot >= 3)
+    {
+        error = "多边形槽位无效";
+        return false;
+    }
+
+    VertexEditor* editor = polygonEditors[slot];
+    if (editor->vertexCount() != polygonSideCounts[slot]->value())
+    {
+        error = QString("多边形 %1 的边数与顶点数不一致").arg(polygonCountForSlot(modeFromIndex(modeCombo->currentIndex()), slot));
+        return false;
+    }
+    for (int i = 0; i < editor->vertexCount(); ++i)
+        polygon.vertices.emplace_back(editor->vertex(i));
+
+    if (polygon.vertices.size() < 3)
+    {
+        error = QString("多边形 %1 至少需要 3 个顶点").arg(polygonCountForSlot(modeFromIndex(modeCombo->currentIndex()), slot));
+        return false;
+    }
+    double twiceArea = 0;
+    for (size_t i = 0; i < polygon.vertices.size(); ++i)
+    {
+        const QPointF& current = polygon.vertices[i];
+        const QPointF& next = polygon.vertices[(i + 1) % polygon.vertices.size()];
+        if (QLineF(current, next).length() < 1e-9)
+        {
+            error = QString("多边形 %1 不能有重合的相邻顶点").arg(polygonCountForSlot(modeFromIndex(modeCombo->currentIndex()), slot));
+            return false;
+        }
+        twiceArea += current.x() * next.y() - next.x() * current.y();
+    }
+    if (std::abs(twiceArea) < 1e-9)
+    {
+        error = QString("多边形 %1 面积必须大于 0").arg(polygonCountForSlot(modeFromIndex(modeCombo->currentIndex()), slot));
+        return false;
+    }
+
+    int orientation = 0;
+    for (size_t i = 0; i < polygon.vertices.size(); ++i)
+    {
+        const QPointF& a = polygon.vertices[i];
+        const QPointF& b = polygon.vertices[(i + 1) % polygon.vertices.size()];
+        const QPointF& c = polygon.vertices[(i + 2) % polygon.vertices.size()];
+        const double cross = (b.x() - a.x()) * (c.y() - b.y()) - (b.y() - a.y()) * (c.x() - b.x());
+        if (std::abs(cross) < 1e-9)
+        {
+            error = QString("多边形 %1 不能有共线的连续边").arg(polygonCountForSlot(modeFromIndex(modeCombo->currentIndex()), slot));
+            return false;
+        }
+        const int currentOrientation = cross > 0 ? 1 : -1;
+        if (orientation != 0 && currentOrientation != orientation)
+        {
+            error = QString("多边形 %1 顶点必须按凸多边形边界顺序排列").arg(polygonCountForSlot(modeFromIndex(modeCombo->currentIndex()), slot));
+            return false;
+        }
+        orientation = currentOrientation;
+    }
+    if (twiceArea < 0)
+        std::reverse(polygon.vertices.begin(), polygon.vertices.end());
+
+    for (size_t i = 0; i < polygon.vertices.size(); ++i)
+    {
+        const QPointF& a = polygon.vertices[i];
+        const QPointF& b = polygon.vertices[(i + 1) % polygon.vertices.size()];
+        const double dx = b.x() - a.x();
+        const double dy = b.y() - a.y();
+        for (size_t j = 0; j < polygon.vertices.size(); ++j)
+        {
+            if (j == i || j == (i + 1) % polygon.vertices.size())
+                continue;
+            const QPointF& point = polygon.vertices[j];
+            const double cross = dx * (point.y() - a.y()) - dy * (point.x() - a.x());
+            if (cross <= 1e-9)
+            {
+                error = QString("多边形 %1 顶点必须按凸多边形边界顺序排列，且不能有重复/共线顶点")
+                    .arg(polygonCountForSlot(modeFromIndex(modeCombo->currentIndex()), slot));
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+bool MainWindow::readPolygons(std::array<Polygon, 3>& polygons, DrawMode mode, QString& error) const
+{
+    for (int slot = 0; slot < 3; ++slot)
+    {
+        if (modeUsesPolygon(mode, slot) && !readPolygon(slot, polygons[static_cast<size_t>(slot)], error))
+            return false;
+    }
+    return true;
 }
 
 void MainWindow::onSolve()
@@ -1045,10 +1479,22 @@ void MainWindow::onSolve()
     const Circle& c1 = circles[0];
     const Circle& c2 = circles[1];
     const Circle& c3 = circles[2];
+    std::array<Polygon, 3> polygons;
+    QString polygonError;
 
     table->setRowCount(0);
     lastSolutions.clear();
-    canvas->setScene(c1, c2, c3, {}, mode, lines);
+    if (!readPolygons(polygons, mode, polygonError))
+    {
+        table->setRowCount(1);
+        table->setItem(0, 0, new QTableWidgetItem("多边形输入错误"));
+        table->setItem(0, 5, new QTableWidgetItem(polygonError));
+        table->item(0, 5)->setForeground(QColor(200, 0, 0));
+        statusBar()->showMessage(polygonError, 5000);
+        canvas->setScene(c1, c2, c3, {}, mode, lines, polygons);
+        return;
+    }
+    canvas->setScene(c1, c2, c3, {}, mode, lines, polygons);
 
     for (int i = 0; i < 3; ++i)
     {
@@ -1073,7 +1519,7 @@ void MainWindow::onSolve()
     }
     else
     {
-        lastSolutions = solve_line_circle(circles, lines, mode);
+        lastSolutions = solve_line_circle(circles, lines, polygons, mode);
     }
     lastSolutions = dedupSolutions(std::move(lastSolutions));
     if (lastSolutions.empty())
@@ -1085,23 +1531,23 @@ void MainWindow::onSolve()
     }
     else
     {
-        fillTable(lastSolutions, mode);
+        fillTable(lastSolutions, mode, polygons);
     }
 
-    canvas->setScene(c1, c2, c3, lastSolutions, mode, lines);
+    canvas->setScene(c1, c2, c3, lastSolutions, mode, lines, polygons);
     canvas->setSelectedSolution(lastSolutions.empty() ? -1 : 0);
     if (!lastSolutions.empty())
         table->setCurrentCell(0, 0);
 }
 
-void MainWindow::fillTable(const std::vector<TangentCircle>& sols, DrawMode mode)
+void MainWindow::fillTable(const std::vector<TangentCircle>& sols, DrawMode mode, const std::array<Polygon, 3>& polygons)
 {
     table->setRowCount(0);
     const std::array<Circle, 3> circles{readCircle(0), readCircle(1), readCircle(2)};
     const std::array<Line, 3> lines{readLine(0), readLine(1), readLine(2)};
     for (const auto& sol : sols)
     {
-        const bool ok = solutionMatches(circles, lines, sol, mode);
+        const bool ok = solutionMatches(circles, lines, polygons, sol, mode);
 
         int row = table->rowCount();
         table->insertRow(row);
@@ -1127,12 +1573,22 @@ void MainWindow::fillTable(const std::vector<TangentCircle>& sols, DrawMode mode
                     const Line& line = lines[static_cast<size_t>(i)];
                     const int number = lineNumberForSlot(mode, i);
 
-                    //正侧用原法向量方向负侧把法向量取反，直接得到真实方向
+                    //正侧用原法向量方向负侧把法向量取反，得到真实方向
                     const QString side = signs[i] > 0 ? sideName(line.a, line.b) : sideName(-line.a, -line.b);
                     const QString shortSide = side.left(side.size() - 1);
 
                     col0Labels << QString("线%1%2").arg(number).arg(shortSide);
                     col5Labels << QString("直线%1的%2").arg(number).arg(side);
+                }
+                else if (modeUsesPolygon(mode, i))
+                {
+                    const int edge = polygonEdgeForSlot(sol, i);
+                    const QString label = QString("多边形%1%2(边%3)")
+                        .arg(polygonCountForSlot(mode, i))
+                        .arg(signs[i] > 0 ? "内切" : "外切")
+                        .arg(edge + 1);
+                    col0Labels << QString("P%1边%2").arg(polygonCountForSlot(mode, i)).arg(edge + 1);
+                    col5Labels << label;
                 }
                 else
                 {
@@ -1163,10 +1619,22 @@ void MainWindow::onVerifyExternal()
     const Circle& c3 = circles[2];
     Circle extSol{extX->value(), extY->value(), extR->value()};
     const DrawMode mode = modeFromIndex(modeCombo->currentIndex());
+    std::array<Polygon, 3> polygons;
+    QString polygonError;
 
     table->setRowCount(0);
     lastSolutions.clear();
-    canvas->setScene(c1, c2, c3, {}, mode, lines);
+    if (!readPolygons(polygons, mode, polygonError))
+    {
+        table->setRowCount(1);
+        table->setItem(0, 0, new QTableWidgetItem("多边形输入错误"));
+        table->setItem(0, 5, new QTableWidgetItem(polygonError));
+        table->item(0, 5)->setForeground(QColor(200, 0, 0));
+        statusBar()->showMessage(polygonError, 5000);
+        canvas->setScene(c1, c2, c3, {}, mode, lines, polygons);
+        return;
+    }
+    canvas->setScene(c1, c2, c3, {}, mode, lines, polygons);
     for (int i = 0; i < 3; ++i)
     {
         if (modeUsesLine(mode, i) && !validLine(lines[static_cast<size_t>(i)]))
@@ -1188,7 +1656,8 @@ void MainWindow::onVerifyExternal()
         return (d_out < d_in) ? 1 : -1;
     };
 
-    int signs[3];
+    int signs[3] = {1, 1, 1};
+    int edges[3] = {-1, -1, -1};
     for (int i = 0; i < 3; ++i)
     {
         if (modeUsesLine(mode, i))
@@ -1196,14 +1665,50 @@ void MainWindow::onVerifyExternal()
             const Line& line = lines[static_cast<size_t>(i)];
             signs[i] = line.a * extSol.x + line.b * extSol.y + line.c >= 0 ? 1 : -1;
         }
-        else
+        else if (modeUsesCircle(mode, i))
         {
             signs[i] = guessSign(extSol, circles[static_cast<size_t>(i)]);
         }
     }
 
-    TangentCircle sol = {extSol, signs[0], signs[1], signs[2]};
-    const bool ok = solutionMatches(circles, lines, sol, mode);
+    TangentCircle sol{extSol, signs[0], signs[1], signs[2]};
+    bool ok = false;
+    auto findPolygonContacts = [&](auto&& self, int slot) -> bool
+    {
+        if (slot == 3)
+            return solutionMatches(circles, lines, polygons, sol, mode);
+        if (!modeUsesPolygon(mode, slot))
+            return self(self, slot + 1);
+        const Polygon& polygon = polygons[static_cast<size_t>(slot)];
+        for (size_t edge = 0; edge < polygon.vertices.size(); ++edge)
+        {
+            edges[slot] = static_cast<int>(edge);
+            for (int side : {1, -1})
+            {
+                signs[slot] = side;
+                sol.s1 = signs[0];
+                sol.s2 = signs[1];
+                sol.s3 = signs[2];
+                sol.e1 = edges[0];
+                sol.e2 = edges[1];
+                sol.e3 = edges[2];
+                if (self(self, slot + 1))
+                    return true;
+            }
+        }
+        edges[slot] = -1;
+        return false;
+    };
+    ok = findPolygonContacts(findPolygonContacts, 0);
+    if (!ok)
+    {
+        sol.s1 = signs[0];
+        sol.s2 = signs[1];
+        sol.s3 = signs[2];
+        sol.e1 = edges[0];
+        sol.e2 = edges[1];
+        sol.e3 = edges[2];
+    }
 
     table->setRowCount(1);
     auto set = [&](int col, const QString& text) { table->setItem(0, col, new QTableWidgetItem(text)); };
@@ -1221,12 +1726,22 @@ void MainWindow::onVerifyExternal()
                 const Line& line = lines[static_cast<size_t>(i)];
                 const int number = lineNumberForSlot(mode, i);
 
-                //正侧用原法向量方向负侧把法向量取反，直接得到真实方向
+                //正侧用原法向量方向负侧把法向量取反，得到真实方向
                 const QString side = signs[i] > 0 ? sideName(line.a, line.b) : sideName(-line.a, -line.b);
                 const QString shortSide = side.left(side.size() - 1);
 
                 col0Labels << QString("线%1%2").arg(number).arg(shortSide);
                 col5Labels << QString("直线%1的%2").arg(number).arg(side);
+            }
+            else if (modeUsesPolygon(mode, i))
+            {
+                const int edge = polygonEdgeForSlot(sol, i);
+                const QString label = QString("多边形%1%2(边%3)")
+                    .arg(polygonCountForSlot(mode, i))
+                    .arg(signs[i] > 0 ? "内切" : "外切")
+                    .arg(edge + 1);
+                col0Labels << QString("P%1边%2").arg(polygonCountForSlot(mode, i)).arg(edge + 1);
+                col5Labels << label;
             }
             else
             {
@@ -1253,13 +1768,13 @@ void MainWindow::onVerifyExternal()
     }
     else
     {
-        set(5, ok ? "外部解与直线/圆相切" : "外部解与直线/圆不相切");
+        set(5, ok ? "外部解与直线/圆/多边形相切" : "外部解与直线/圆/多边形不相切");
     }
 
     table->item(0, 4)->setForeground(ok ? QColor(0,140,0) : QColor(200,0,0));
 
     lastSolutions = {sol};
-    canvas->setScene(c1, c2, c3, {sol}, mode, lines);
+    canvas->setScene(c1, c2, c3, {sol}, mode, lines, polygons);
     canvas->setSelectedSolution(0);
 }
 
@@ -1277,9 +1792,18 @@ static QString csvEscape(const QString& s)
 void MainWindow::onExportCsv()
 {
     QString path = QFileDialog::getSaveFileName
-        (this, "导出 CSV", "results.csv", "CSV 文件 (*.csv)");//导出表格内容为 CSV
+        (this, "导出 CSV", "results.csv", "CSV 文件 (*.csv)");//导出表格内容为csv
     if (path.isEmpty())
         return;
+
+    const DrawMode mode = modeFromIndex(modeCombo->currentIndex());
+    std::array<Polygon, 3> polygons;
+    QString polygonError;
+    if (!readPolygons(polygons, mode, polygonError))
+    {
+        statusBar()->showMessage(polygonError, 5000);
+        return;
+    }
 
     QFile file(path);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Text))
@@ -1308,14 +1832,30 @@ void MainWindow::onExportCsv()
                 << QString::number(line.b, 'g', 12) << ","
                 << QString::number(line.c, 'g', 12) << "\n";
         }
+        else if (modeUsesPolygon(mode, i))
+        {
+            out << "known," << (i + 1) << ",polygon,,,,,,\n";
+        }
         else
         {
             const Circle circle = readCircle(i);
-            const bool targetRadius = modeFromIndex(modeCombo->currentIndex()) == DrawMode::TTR && i == 2;
+            const bool targetRadius = mode == DrawMode::TTR && i == 2;
             out << (targetRadius ? "target-radius," : "circle,")
                 << QString::number(circle.x, 'g', 12) << ","
                 << QString::number(circle.y, 'g', 12) << ","
                 << QString::number(circle.r, 'g', 12) << ",,,\n";
+        }
+    }
+    for (int polygonSlot = 0; polygonSlot < 3; ++polygonSlot)
+    {
+        if (!modeUsesPolygon(mode, polygonSlot))
+            continue;
+        const Polygon& polygon = polygons[static_cast<size_t>(polygonSlot)];
+        for (size_t i = 0; i < polygon.vertices.size(); ++i)
+        {
+            out << "polygon," << polygonCountForSlot(mode, polygonSlot) << ",vertex " << (i + 1) << ","
+                << QString::number(polygon.vertices[i].x(), 'g', 12) << ","
+                << QString::number(polygon.vertices[i].y(), 'g', 12) << ",,,,\n";
         }
     }
     out << "\n";
